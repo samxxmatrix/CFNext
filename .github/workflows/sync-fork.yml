@@ -1,0 +1,40 @@
+name: Sync Fork Upstream
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Sync upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -e
+
+          UPSTREAM=$(gh api "repos/$REPO" --jq '.parent.full_name')
+
+          if [ "$UPSTREAM" = "null" ] || [ -z "$UPSTREAM" ]; then
+            echo "This repository is not a fork."
+            exit 1
+          fi
+
+          DEFAULT_BRANCH=$(gh api "repos/$UPSTREAM" --jq '.default_branch')
+
+          # 关键修改：使用 gh repo clone，自动携带 GH_TOKEN 认证
+          gh repo clone "$REPO" repo
+          cd repo
+
+          git remote add upstream "https://github.com/$UPSTREAM.git"
+          git fetch upstream "$DEFAULT_BRANCH"
+          git checkout "$DEFAULT_BRANCH"
+          git merge --ff-only "upstream/$DEFAULT_BRANCH"
+          git push origin "$DEFAULT_BRANCH"
