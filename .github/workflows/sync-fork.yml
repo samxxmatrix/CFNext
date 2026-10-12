@@ -2,26 +2,58 @@ name: Upstream Sync
 
 on:
   schedule:
-    # 每天 UTC 时间 0 点运行一次，可按需修改
     - cron: '0 0 * * *'
-  workflow_dispatch: # 允许在 Actions 页面手动触发
+  workflow_dispatch:
+    inputs:
+      merge_strategy:
+        description: '合并策略'
+        required: false
+        default: 'ff-only'
+        type: choice
+        options:
+          - ff-only        # 快进合并（默认，安全）
+          - merge          # 允许合并分叉
+          - rebase         # 变基同步
+          - force-reset    # 强制重置
+
+permissions:
+  contents: write
 
 jobs:
-  sync_latest_from_upstream:
+  sync:
     runs-on: ubuntu-latest
-    name: Sync latest commits from upstream repo
-    # 仅在 Fork 仓库中运行
     if: github.event.repository.fork
     steps:
-      - name: Checkout target repo
-        uses: actions/checkout@v4
-        with:
-          persist-credentials: false # 关闭凭证持久化，安全性更高
+      - uses: actions/checkout@v4
 
-      - name: Sync upstream changes
+      - name: Get upstream repo
+        id: upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          UPSTREAM=$(gh api "repos/${{ github.repository }}" --jq '.parent.full_name')
+          if [ "$UPSTREAM" = "null" ] || [ -z "$UPSTREAM" ]; then
+            echo "Not a fork."; exit 1
+          fi
+          echo "repo=$UPSTREAM" >> $GITHUB_OUTPUT
+
+      - name: Set merge args
+        id: args
+        run: |
+          case "${{ inputs.merge_strategy || 'ff-only' }}" in
+            ff-only)      echo "pull=--ff-only" >> $GITHUB_OUTPUT ;;
+            merge)        echo "pull=--allow-unrelated-histories" >> $GITHUB_OUTPUT ;;
+            rebase)       echo "pull=--rebase" >> $GITHUB_OUTPUT; echo "rebase=true" >> $GITHUB_OUTPUT ;;
+            force-reset)  echo "pull=--force" >> $GITHUB_OUTPUT; echo "push=--force" >> $GITHUB_OUTPUT ;;
+          esac
+
+      - name: Sync upstream
         uses: aormsby/Fork-Sync-With-Upstream-action@v3.4.3
         with:
-          target_sync_branch: main # 你的 Fork 仓库的目标分支
-          target_repo_token: ${{ secrets.GITHUB_TOKEN }} # 使用自动令牌
-          upstream_sync_repo: PAICNI/CFNext # ⚠️ 必须修改为上游仓库
-          upstream_sync_branch: main # 上游仓库的分支
+          target_sync_branch: main
+          target_repo_token: ${{ secrets.GITHUB_TOKEN }}
+          upstream_sync_repo: ${{ steps.upstream.outputs.repo }}
+          upstream_sync_branch: main
+          git_pull_args: ${{ steps.args.outputs.pull }}
+          git_push_args: ${{ steps.args.outputs.push || '--force' }}
+          git_pull_rebase_config: ${{ steps.args.outputs.rebase || 'false' }}
